@@ -1,1 +1,1 @@
-"# Mini RAFT Project" 
+"# Mini RAFT Distributed Drawing Board" 
