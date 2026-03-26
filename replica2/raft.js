@@ -1,116 +1,108 @@
-// Core RAFT logic — owned by Ishanvee
-// This is a working stub so the system runs end-to-end
-
-const axios = require('axios');
-
+const axios = require("axios");
 class RaftNode {
-  constructor(nodeId, peers) {
-    this.nodeId = nodeId;
-    this.peers = peers;
-    this.state = 'follower';
-    this.currentTerm = 0;
-    this.votedFor = null;
-    this.leaderId = null;
-    this.log = [];
-    this.electionTimeout = null;
-    this.heartbeatInterval = null;
-  }
-
-  start() {
-    this.resetElectionTimeout();
-  }
-
-  isLeader() {
-    return this.state === 'leader';
-  }
-
-  resetElectionTimeout() {
-    clearTimeout(this.electionTimeout);
-    const timeout = 1500 + Math.random() * 1500;
-    this.electionTimeout = setTimeout(() => this.startElection(), timeout);
-  }
-
-  async startElection() {
-    this.state = 'candidate';
-    this.currentTerm++;
-    this.votedFor = this.nodeId;
-    let votes = 1;
-    console.log(`${this.nodeId} starting election for term ${this.currentTerm}`);
-
-    for (const peer of this.peers) {
-      try {
-        const res = await axios.post(`${peer}/raft/request-vote`, {
-          term: this.currentTerm,
-          candidateId: this.nodeId
-        });
-        if (res.data.voteGranted) votes++;
-      } catch (e) {}
+    constructor(id, peers) {
+        this.id = id;
+        this.peers = peers;
+        this.state = "FOLLOWER";
+        this.currentTerm = 0;
+        this.votedFor = null;
+        this.leaderId = null;
+        this.log = [];
+        this.electionTimeout = null;
+        this.heartbeatInterval = null;
     }
-
-    if (votes > (this.peers.length + 1) / 2) {
-      this.becomeLeader();
-    } else {
-      this.state = 'follower';
-      this.resetElectionTimeout();
+    start() {
+        this.resetElectionTimer();
     }
-  }
-
-  becomeLeader() {
-    this.state = 'leader';
-    this.leaderId = this.nodeId;
-    console.log(`${this.nodeId} became leader for term ${this.currentTerm}`);
-    this.heartbeatInterval = setInterval(() => this.sendHeartbeats(), 500);
-  }
-
-  async sendHeartbeats() {
-    for (const peer of this.peers) {
-      try {
-        await axios.post(`${peer}/raft/append-entries`, {
-          term: this.currentTerm,
-          leaderId: this.nodeId,
-          entries: []
-        });
-      } catch (e) {}
+    isLeader() {
+        return this.state === "LEADER";
     }
-  }
-
-  appendEntry(stroke) {
-    this.log.push(stroke);
-    for (const peer of this.peers) {
-      axios.post(`${peer}/raft/append-entries`, {
-        term: this.currentTerm,
-        leaderId: this.nodeId,
-        entries: [stroke]
-      }).catch(() => {});
+    resetElectionTimer() {
+        if (this.electionTimeout) clearTimeout(this.electionTimeout);
+        const timeout = Math.random() * 300 + 500;
+        this.electionTimeout = setTimeout(() => {
+            this.startElection();
+        }, timeout);
     }
-  }
-
-  handleAppendEntries({ term, leaderId, entries }) {
-    if (term >= this.currentTerm) {
-      this.currentTerm = term;
-      this.state = 'follower';
-      this.leaderId = leaderId;
-      clearInterval(this.heartbeatInterval);
-      this.resetElectionTimeout();
-      if (entries.length > 0) this.log.push(...entries);
+    async startElection() {
+        this.state = "CANDIDATE";
+        this.currentTerm++;
+        this.votedFor = this.id;
+        let votes = 1;
+        console.log(`[${this.id}] Candidate (term ${this.currentTerm})`);
+        for (let peer of this.peers) {
+            try {
+                const res = await axios.post(`${peer}/raft/request-vote`, {
+                    term: this.currentTerm,
+                    candidateId: this.id
+                });
+                if (res.data.voteGranted) votes++;
+            } catch (e) {}
+        }
+        if (votes >= 2) {
+            this.becomeLeader();
+        } else {
+            this.state = "FOLLOWER";
+            this.resetElectionTimer();
+        }
     }
-    return { success: true, term: this.currentTerm };
-  }
-
-  handleRequestVote({ term, candidateId }) {
-    if (term > this.currentTerm) {
-      this.currentTerm = term;
-      this.state = 'follower';
-      this.votedFor = candidateId;
-      return { voteGranted: true, term: this.currentTerm };
+    becomeLeader() {
+        this.state = "LEADER";
+        this.leaderId = this.id;
+        console.log(`[${this.id}] LEADER`);
+        this.startHeartbeat();
     }
-    const canVote = !this.votedFor || this.votedFor === candidateId;
-    if (term === this.currentTerm && canVote) {
-      this.votedFor = candidateId;
-      return { voteGranted: true, term: this.currentTerm };
+    startHeartbeat() {
+        if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+        this.heartbeatInterval = setInterval(() => {
+            this.sendHeartbeat();
+        }, 150);
     }
-    return { voteGranted: false, term: this.currentTerm };
-  }
+    async sendHeartbeat() {
+        for (let peer of this.peers) {
+            try {
+                await axios.post(`${peer}/raft/append-entries`, {
+                    term: this.currentTerm,
+                    leaderId: this.id,
+                    entries: []
+                });
+            } catch (e) {}
+        }
+    }
+    appendEntry(entry) {
+        this.log.push(entry);
+        console.log(`[${this.id}] appended entry`);
+    }
+    handleRequestVote(data) {
+        const { term, candidateId } = data;
+        if (term > this.currentTerm) {
+            this.currentTerm = term;
+            this.state = "FOLLOWER";
+            this.votedFor = null;
+        }
+        let voteGranted = false;
+        if (
+            term === this.currentTerm &&
+            (this.votedFor === null || this.votedFor === candidateId)
+        ) {
+            voteGranted = true;
+            this.votedFor = candidateId;
+            this.resetElectionTimer();
+        }
+        return { voteGranted };
+    }
+    handleAppendEntries(data) {
+        const { term, leaderId, entries } = data;
+        if (term >= this.currentTerm) {
+            this.currentTerm = term;
+            this.state = "FOLLOWER";
+            this.leaderId = leaderId;
+            this.resetElectionTimer();
+            if (entries && entries.length > 0) {
+                this.log.push(...entries);
+            }
+        }
+        return { success: true };
+    }
 }
-
 module.exports = { RaftNode };
