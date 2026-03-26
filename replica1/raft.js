@@ -1,35 +1,42 @@
- const axios = require("axios");
+const axios = require("axios");
 
 class RaftNode {
     constructor(id, peers) {
         this.id = id;
-        this.peers = peers; // other replica URLs
+        this.peers = peers;
 
-        // RAFT STATE
         this.state = "FOLLOWER";
         this.currentTerm = 0;
         this.votedFor = null;
         this.leaderId = null;
 
-        // TIMERS
+        this.log = [];
+
         this.electionTimeout = null;
         this.heartbeatInterval = null;
+    }
 
+    // ---------------- START ----------------
+    start() {
         this.resetElectionTimer();
     }
 
-    // -------------------- TIMER --------------------
+    isLeader() {
+        return this.state === "LEADER";
+    }
+
+    // ---------------- TIMERS ----------------
     resetElectionTimer() {
         if (this.electionTimeout) clearTimeout(this.electionTimeout);
 
-        const timeout = Math.random() * 300 + 500; // 500–800ms
+        const timeout = Math.random() * 300 + 500;
 
         this.electionTimeout = setTimeout(() => {
             this.startElection();
         }, timeout);
     }
 
-    // -------------------- ELECTION --------------------
+    // ---------------- ELECTION ----------------
     async startElection() {
         this.state = "CANDIDATE";
         this.currentTerm++;
@@ -37,19 +44,17 @@ class RaftNode {
 
         let votes = 1;
 
-        console.log(`[${this.id}] became CANDIDATE (term ${this.currentTerm})`);
+        console.log(`[${this.id}] Candidate (term ${this.currentTerm})`);
 
         for (let peer of this.peers) {
             try {
-                const res = await axios.post(`${peer}/request-vote`, {
+                const res = await axios.post(`${peer}/raft/request-vote`, {
                     term: this.currentTerm,
                     candidateId: this.id
                 });
 
-                if (res.data.voteGranted) {
-                    votes++;
-                }
-            } catch (err) {}
+                if (res.data.voteGranted) votes++;
+            } catch (e) {}
         }
 
         if (votes >= 2) {
@@ -60,12 +65,12 @@ class RaftNode {
         }
     }
 
-    // -------------------- LEADER --------------------
+    // ---------------- LEADER ----------------
     becomeLeader() {
         this.state = "LEADER";
         this.leaderId = this.id;
 
-        console.log(`[${this.id}] became LEADER`);
+        console.log(`[${this.id}] LEADER`);
 
         this.startHeartbeat();
     }
@@ -75,24 +80,30 @@ class RaftNode {
 
         this.heartbeatInterval = setInterval(() => {
             this.sendHeartbeat();
-        }, 150); // 150ms
+        }, 150);
     }
 
     async sendHeartbeat() {
         for (let peer of this.peers) {
             try {
-                await axios.post(`${peer}/heartbeat`, {
+                await axios.post(`${peer}/raft/append-entries`, {
                     term: this.currentTerm,
-                    leaderId: this.id
+                    leaderId: this.id,
+                    entries: []
                 });
-            } catch (err) {}
+            } catch (e) {}
         }
     }
 
-    // -------------------- RPC HANDLERS --------------------
+    // ---------------- LOG ----------------
+    appendEntry(entry) {
+        this.log.push(entry);
+        console.log(`[${this.id}] appended entry`);
+    }
 
-    async handleRequestVote(req) {
-        const { term, candidateId } = req.body;
+    // ---------------- RPC ----------------
+    handleRequestVote(data) {
+        const { term, candidateId } = data;
 
         if (term > this.currentTerm) {
             this.currentTerm = term;
@@ -114,8 +125,8 @@ class RaftNode {
         return { voteGranted };
     }
 
-    async handleHeartbeat(req) {
-        const { term, leaderId } = req.body;
+    handleAppendEntries(data) {
+        const { term, leaderId, entries } = data;
 
         if (term >= this.currentTerm) {
             this.currentTerm = term;
@@ -123,10 +134,15 @@ class RaftNode {
             this.leaderId = leaderId;
 
             this.resetElectionTimer();
+
+            // append entries (basic)
+            if (entries && entries.length > 0) {
+                this.log.push(...entries);
+            }
         }
 
         return { success: true };
     }
 }
 
-module.exports = RaftNode;
+module.exports = { RaftNode };
