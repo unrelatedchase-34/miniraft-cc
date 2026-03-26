@@ -11,22 +11,20 @@ app.use(express.json());
 
 const raft = new RaftNode(NODE_ID, PEERS);
 
-app.post('/append', (req, res) => {
+app.post('/append', async (req, res) => {
   if (!raft.isLeader()) {
     return res.status(403).json({ error: 'not leader', leader: raft.leaderId });
   }
-  raft.appendEntry(req.body.stroke);
-  res.json({ success: true });
+  const committed = await raft.appendEntry(req.body.stroke);
+  res.json({ success: committed });
 });
 
 app.post('/raft/append-entries', (req, res) => {
-  const result = raft.handleAppendEntries(req.body);
-  res.json(result);
+  res.json(raft.handleAppendEntries(req.body));
 });
 
 app.post('/raft/request-vote', (req, res) => {
-  const result = raft.handleRequestVote(req.body);
-  res.json(result);
+  res.json(raft.handleRequestVote(req.body));
 });
 
 app.get('/status', (req, res) => {
@@ -40,7 +38,30 @@ app.get('/status', (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`replica3 running on port ${PORT}`);
+app.get('/sync-log', (req, res) => {
+  if (!raft.isLeader()) {
+    return res.status(403).json({ error: 'not leader' });
+  }
+  res.json({ log: raft.log, term: raft.currentTerm });
+});
+
+async function syncFromLeader() {
+  for (let peer of PEERS) {
+    try {
+      const res = await axios.get(`${peer}/sync-log`);
+      if (res.data.log) {
+        raft.log = res.data.log;
+        raft.currentTerm = res.data.term;
+        console.log(`[${NODE_ID}] synced ${raft.log.length} entries from leader`);
+        return;
+      }
+    } catch (e) {}
+  }
+  console.log(`[${NODE_ID}] no leader found, starting fresh`);
+}
+
+app.listen(PORT, async () => {
+  console.log(`${NODE_ID} running on port ${PORT}`);
+  await syncFromLeader();
   raft.start();
 });

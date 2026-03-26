@@ -11,18 +11,12 @@ class RaftNode {
         this.electionTimeout = null;
         this.heartbeatInterval = null;
     }
-    start() {
-        this.resetElectionTimer();
-    }
-    isLeader() {
-        return this.state === "LEADER";
-    }
+    start() { this.resetElectionTimer(); }
+    isLeader() { return this.state === "LEADER"; }
     resetElectionTimer() {
         if (this.electionTimeout) clearTimeout(this.electionTimeout);
         const timeout = Math.random() * 300 + 500;
-        this.electionTimeout = setTimeout(() => {
-            this.startElection();
-        }, timeout);
+        this.electionTimeout = setTimeout(() => this.startElection(), timeout);
     }
     async startElection() {
         this.state = "CANDIDATE";
@@ -39,12 +33,8 @@ class RaftNode {
                 if (res.data.voteGranted) votes++;
             } catch (e) {}
         }
-        if (votes >= 2) {
-            this.becomeLeader();
-        } else {
-            this.state = "FOLLOWER";
-            this.resetElectionTimer();
-        }
+        if (votes >= 2) { this.becomeLeader(); }
+        else { this.state = "FOLLOWER"; this.resetElectionTimer(); }
     }
     becomeLeader() {
         this.state = "LEADER";
@@ -54,9 +44,7 @@ class RaftNode {
     }
     startHeartbeat() {
         if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-        this.heartbeatInterval = setInterval(() => {
-            this.sendHeartbeat();
-        }, 150);
+        this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), 150);
     }
     async sendHeartbeat() {
         for (let peer of this.peers) {
@@ -69,9 +57,27 @@ class RaftNode {
             } catch (e) {}
         }
     }
-    appendEntry(entry) {
+    async appendEntry(entry) {
         this.log.push(entry);
-        console.log(`[${this.id}] appended entry`);
+        console.log(`[${this.id}] appended entry, replicating to peers`);
+        let acks = 1;
+        for (let peer of this.peers) {
+            try {
+                const res = await axios.post(`${peer}/raft/append-entries`, {
+                    term: this.currentTerm,
+                    leaderId: this.id,
+                    entries: [entry]
+                });
+                if (res.data.success) acks++;
+            } catch (e) {}
+        }
+        const majority = Math.floor((this.peers.length + 1) / 2) + 1;
+        if (acks >= majority) {
+            console.log(`[${this.id}] entry committed (${acks} acks)`);
+            return true;
+        }
+        console.log(`[${this.id}] entry NOT committed (only ${acks} acks)`);
+        return false;
     }
     handleRequestVote(data) {
         const { term, candidateId } = data;
@@ -81,10 +87,7 @@ class RaftNode {
             this.votedFor = null;
         }
         let voteGranted = false;
-        if (
-            term === this.currentTerm &&
-            (this.votedFor === null || this.votedFor === candidateId)
-        ) {
+        if (term === this.currentTerm && (this.votedFor === null || this.votedFor === candidateId)) {
             voteGranted = true;
             this.votedFor = candidateId;
             this.resetElectionTimer();
@@ -97,6 +100,7 @@ class RaftNode {
             this.currentTerm = term;
             this.state = "FOLLOWER";
             this.leaderId = leaderId;
+            if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
             this.resetElectionTimer();
             if (entries && entries.length > 0) {
                 this.log.push(...entries);
