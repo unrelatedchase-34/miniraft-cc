@@ -1,68 +1,31 @@
-const WebSocket = require('ws');
+const express = require('express');
 const axios = require('axios');
-
-const PORT = 8080;
-const wss = new WebSocket.Server({ port: PORT });
-
-const REPLICAS = [
-  'http://replica1:3001',
-  'http://replica2:3002',
-  'http://replica3:3003'
-];
-
-let clients = new Set();
-let leaderUrl = null;
-
-// Find which replica is the leader
-async function findLeader() {
-  for (let replica of REPLICAS) {
-    try {
-      const res = await axios.get(`${replica}/status`);
-      if (res.data.isLeader) {
-        leaderUrl = replica;
-        console.log(`Leader found: ${replica}`);
-        return;
-      }
-    } catch (e) {}
-  }
-  console.log('No leader found yet, retrying...');
-  leaderUrl = null;
-}
-
-// Keep checking for leader every 1 second
-setInterval(findLeader, 1000);
-findLeader();
-
-wss.on('connection', (ws) => {
-  console.log('Client connected');
-  clients.add(ws);
-
-  ws.on('message', async (data) => {
-    const stroke = JSON.parse(data.toString());
-    console.log('Received stroke:', stroke);
-
-    // Forward to leader
-    if (leaderUrl) {
-      try {
-        await axios.post(`${leaderUrl}/append`, { stroke });
-      } catch (e) {
-        console.log('Failed to forward to leader, retrying...');
-        await findLeader();
-      }
-    }
-
-    // Broadcast to all clients
-    for (let client of clients) {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify(stroke));
-      }
-    }
-  });
-
-  ws.on('close', () => {
-    console.log('Client disconnected');
-    clients.delete(ws);
-  });
+const { WebSocketServer } = require('ws');
+const http = require('http');
+const app = express();
+app.use(express.json());
+const replicas = (process.env.REPLICAS || '').split(',').filter(Boolean);
+const clients = new Set();
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
 });
-
-console.log(`Gateway running on ws://localhost:${PORT}`);
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server });
+wss.on('connection', (ws) => {
+  clients.add(ws);
+  ws.on('message', async (data) => {
+    const stroke = JSON.parse(data);
+    for (const client of clients) {
+      if (client !== ws && client.readyState === 1) client.send(JSON.stringify(stroke));
+    }
+    for (let replica of replicas) {
+      try { await axios.post(`${replica}/append`, { stroke }); break; } catch (e) { continue; }
+    }
+  });
+  ws.on('close', () => clients.delete(ws));
+});
+server.listen(8080, () => console.log('Gateway on 8080'));
