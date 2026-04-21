@@ -6,7 +6,7 @@ services:
     environment:
       - PORT=3001
       - NODE_ID=replica1
-      - PEERS=http://replica2:3002,http://replica3:3003,http://replica4:3004
+      - PEERS=http://replica2:3002,http://replica3:3003,http://replica4:3004,http://replica5:3005
     networks:
       - raft-net
   replica2:
@@ -16,7 +16,7 @@ services:
     environment:
       - PORT=3002
       - NODE_ID=replica2
-      - PEERS=http://replica1:3001,http://replica3:3003,http://replica4:3004
+      - PEERS=http://replica1:3001,http://replica3:3003,http://replica4:3004,http://replica5:3005
     networks:
       - raft-net
   replica3:
@@ -26,7 +26,7 @@ services:
     environment:
       - PORT=3003
       - NODE_ID=replica3
-      - PEERS=http://replica1:3001,http://replica2:3002,http://replica4:3004
+      - PEERS=http://replica1:3001,http://replica2:3002,http://replica4:3004,http://replica5:3005
     networks:
       - raft-net
   replica4:
@@ -36,7 +36,17 @@ services:
     environment:
       - PORT=3004
       - NODE_ID=replica4
-      - PEERS=http://replica1:3001,http://replica2:3002,http://replica3:3003
+      - PEERS=http://replica1:3001,http://replica2:3002,http://replica3:3003,http://replica5:3005
+    networks:
+      - raft-net
+  replica5:
+    build: ./replica5
+    ports:
+      - "3005:3005"
+    environment:
+      - PORT=3005
+      - NODE_ID=replica5
+      - PEERS=http://replica1:3001,http://replica2:3002,http://replica3:3003,http://replica4:3004
     networks:
       - raft-net
   gateway:
@@ -44,12 +54,13 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - REPLICAS=http://replica1:3001,http://replica2:3002,http://replica3:3003,http://replica4:3004
+      - REPLICAS=http://replica1:3001,http://replica2:3002,http://replica3:3003,http://replica4:3004,http://replica5:3005
     depends_on:
       - replica1
       - replica2
       - replica3
       - replica4
+      - replica5
     networks:
       - raft-net
   frontend:

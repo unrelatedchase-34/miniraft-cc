@@ -6,12 +6,12 @@
   <style>
     body { font-family: monospace; background: #111; color: #eee; padding: 20px; }
     h1 { color: #0f0; }
-    .node { border: 1px solid #444; padding: 15px; margin: 10px; display: inline-block; width: 200px; border-radius: 8px; vertical-align: top; }
+    .node { border: 1px solid #444; padding: 15px; margin: 10px; display: inline-block; width: 180px; border-radius: 8px; vertical-align: top; }
     .LEADER { border-color: #0f0; background: #0a2a0a; }
     .FOLLOWER { border-color: #44f; background: #0a0a2a; }
     .CANDIDATE { border-color: #f80; background: #2a1a00; }
     .OFFLINE { border-color: #f44; background: #1a0a0a; }
-    .state { font-size: 20px; font-weight: bold; margin: 5px 0; }
+    .state { font-size: 18px; font-weight: bold; margin: 5px 0; }
     .LEADER .state { color: #0f0; }
     .FOLLOWER .state { color: #44f; }
     .CANDIDATE .state { color: #f80; }
@@ -28,7 +28,8 @@
       { id: 'replica1', port: 3001 },
       { id: 'replica2', port: 3002 },
       { id: 'replica3', port: 3003 },
-      { id: 'replica4', port: 3004 }
+      { id: 'replica4', port: 3004 },
+      { id: 'replica5', port: 3005 }
     ];
     async function fetchStatus(port) {
       try {
