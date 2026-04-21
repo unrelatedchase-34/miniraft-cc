@@ -22,12 +22,15 @@ class RaftNode {
 
     resetElectionTimer() {
         if (this.electionTimeout) clearTimeout(this.electionTimeout);
-        // Wider range = less split votes (500ms–1500ms)
-        const timeout = Math.random() * 3000 + 2000;
+        // Wide random range: 5000-8000ms — plenty of time for heartbeats to arrive
+        const timeout = Math.random() * 3000 + 5000;
         this.electionTimeout = setTimeout(() => this.startElection(), timeout);
     }
 
     async startElection() {
+        // Don't start election if we already have a leader
+        if (this.state === "LEADER") return;
+
         this.state = "CANDIDATE";
         this.currentTerm++;
         this.votedFor = this.id;
@@ -44,24 +47,21 @@ class RaftNode {
                 candidateId: this.id,
                 lastLogIndex,
                 lastLogTerm
-            }, { timeout: 1000 }).then(res => res.data.voteGranted ? 1 : 0).catch(() => 0)
+            }, { timeout: 2000 }).then(res => res.data.voteGranted ? 1 : 0).catch(() => 0)
         );
 
         const results = await Promise.all(votePromises);
         votes += results.reduce((a, b) => a + b, 0);
 
-        // Majority of total cluster (4 nodes = need 3, 3 nodes alive = still need 3)
-        // But use responding nodes to handle offline replicas:
-        const majority = Math.floor((this.peers.length + 1) / 2) + 1;
-
+        // If we are no longer candidate (someone else won), abort
         if (this.state !== "CANDIDATE") return;
+
+        const majority = Math.floor((this.peers.length + 1) / 2) + 1;
 
         if (votes >= majority) {
             this.becomeLeader();
         } else {
             this.state = "FOLLOWER";
-            // Random backoff before retrying to break split vote loops
-            await new Promise(r => setTimeout(r, Math.random() * 300));
             this.resetElectionTimer();
         }
     }
@@ -70,22 +70,32 @@ class RaftNode {
         this.state = "LEADER";
         this.leaderId = this.id;
         console.log(`[${this.id}] LEADER (term ${this.currentTerm})`);
+
         for (const peer of this.peers) {
             this.nextIndex[peer] = this.log.length;
             this.matchIndex[peer] = -1;
         }
+
         this.startHeartbeat();
     }
 
     startHeartbeat() {
         if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-        this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), 100);
+        // Send heartbeat every 500ms — well within the 5000ms election timeout
+        this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), 500);
     }
 
     async sendHeartbeat() {
+        if (this.state !== "LEADER") {
+            clearInterval(this.heartbeatInterval);
+            return;
+        }
+
         for (const peer of this.peers) {
             const prevLogIndex = (this.nextIndex[peer] || 0) - 1;
-            const prevLogTerm = prevLogIndex >= 0 && this.log[prevLogIndex] ? this.log[prevLogIndex].term : 0;
+            const prevLogTerm = prevLogIndex >= 0 && this.log[prevLogIndex]
+                ? this.log[prevLogIndex].term : 0;
+
             try {
                 const res = await axios.post(`${peer}/raft/append-entries`, {
                     term: this.currentTerm,
@@ -94,16 +104,24 @@ class RaftNode {
                     prevLogTerm,
                     entries: [],
                     leaderCommit: this.commitIndex
-                }, { timeout: 1000 });
-                if (res.data.term > this.currentTerm) this.stepDown(res.data.term);
+                }, { timeout: 2000 });
+
+                if (res.data.term > this.currentTerm) {
+                    this.stepDown(res.data.term);
+                    return;
+                }
             } catch (e) {}
         }
     }
 
     async appendEntry(data) {
-        const entry = { term: this.currentTerm, index: this.log.length, data };
+        const entry = {
+            term: this.currentTerm,
+            index: this.log.length,
+            data
+        };
         this.log.push(entry);
-        console.log(`[${this.id}] Appended entry index=${entry.index}, replicating...`);
+        console.log(`[${this.id}] Appended entry index=${entry.index}`);
 
         let acks = 1;
 
@@ -111,7 +129,9 @@ class RaftNode {
             for (let attempt = 0; attempt < 3; attempt++) {
                 try {
                     const prevLogIndex = entry.index - 1;
-                    const prevLogTerm = prevLogIndex >= 0 && this.log[prevLogIndex] ? this.log[prevLogIndex].term : 0;
+                    const prevLogTerm = prevLogIndex >= 0 && this.log[prevLogIndex]
+                        ? this.log[prevLogIndex].term : 0;
+
                     const res = await axios.post(`${peer}/raft/append-entries`, {
                         term: this.currentTerm,
                         leaderId: this.id,
@@ -119,7 +139,8 @@ class RaftNode {
                         prevLogTerm,
                         entries: [entry],
                         leaderCommit: this.commitIndex
-                    }, { timeout: 1000 });
+                    }, { timeout: 2000 });
+
                     if (res.data.success) {
                         this.matchIndex[peer] = entry.index;
                         this.nextIndex[peer] = entry.index + 1;
@@ -128,7 +149,7 @@ class RaftNode {
                         this.nextIndex[peer] = Math.max(0, (this.nextIndex[peer] || 0) - 1);
                     }
                 } catch (e) {
-                    await new Promise(r => setTimeout(r, 50));
+                    await new Promise(r => setTimeout(r, 100));
                 }
             }
             return 0;
@@ -144,43 +165,56 @@ class RaftNode {
             console.log(`[${this.id}] Committed index=${entry.index} (${acks} acks)`);
             return true;
         }
+
         console.log(`[${this.id}] NOT committed — only ${acks} acks`);
         return false;
     }
 
     handleRequestVote(data) {
         const { term, candidateId, lastLogIndex, lastLogTerm } = data;
+
         if (term > this.currentTerm) this.stepDown(term);
 
         let voteGranted = false;
-        if (term === this.currentTerm && (this.votedFor === null || this.votedFor === candidateId)) {
+
+        if (term === this.currentTerm &&
+            (this.votedFor === null || this.votedFor === candidateId)) {
+
             const myLastIndex = this.log.length - 1;
             const myLastTerm = myLastIndex >= 0 ? this.log[myLastIndex].term : 0;
-            const candidateLogOk = (lastLogTerm > myLastTerm) ||
+
+            const candidateLogOk =
+                (lastLogTerm > myLastTerm) ||
                 (lastLogTerm === myLastTerm && lastLogIndex >= myLastIndex);
+
             if (candidateLogOk) {
                 voteGranted = true;
                 this.votedFor = candidateId;
                 this.resetElectionTimer();
             }
         }
+
         return { voteGranted, term: this.currentTerm };
     }
 
     handleAppendEntries(data) {
         const { term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit } = data;
-        if (term < this.currentTerm) return { success: false, term: this.currentTerm };
+
+        if (term < this.currentTerm) {
+            return { success: false, term: this.currentTerm };
+        }
+
         if (term > this.currentTerm) this.stepDown(term);
 
+        // Valid heartbeat/append from current leader — reset everything
         this.state = "FOLLOWER";
         this.leaderId = leaderId;
         this.currentTerm = term;
         if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-        this.resetElectionTimer();
+        this.resetElectionTimer(); // KEY: reset timer on EVERY valid message from leader
 
         if (prevLogIndex >= 0) {
             if (!this.log[prevLogIndex] || this.log[prevLogIndex].term !== prevLogTerm) {
-                console.log(`[${this.id}] Log inconsistency at index ${prevLogIndex} — rejecting`);
                 return { success: false, term: this.currentTerm };
             }
         }
@@ -192,7 +226,6 @@ class RaftNode {
                 }
                 if (!this.log[entry.index]) {
                     this.log.push(entry);
-                    console.log(`[${this.id}] Follower appended index=${entry.index}`);
                 }
             }
         }
