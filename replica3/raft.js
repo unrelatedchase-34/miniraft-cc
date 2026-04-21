@@ -23,7 +23,7 @@ class RaftNode {
     resetElectionTimer() {
         if (this.electionTimeout) clearTimeout(this.electionTimeout);
         // Wider range = less split votes (500ms–1500ms)
-        const timeout = Math.random() * 1000 + 500;
+        const timeout = Math.random() * 3000 + 2000;
         this.electionTimeout = setTimeout(() => this.startElection(), timeout);
     }
 
@@ -44,7 +44,7 @@ class RaftNode {
                 candidateId: this.id,
                 lastLogIndex,
                 lastLogTerm
-            }, { timeout: 300 }).then(res => res.data.voteGranted ? 1 : 0).catch(() => 0)
+            }, { timeout: 1000 }).then(res => res.data.voteGranted ? 1 : 0).catch(() => 0)
         );
 
         const results = await Promise.all(votePromises);
@@ -79,7 +79,7 @@ class RaftNode {
 
     startHeartbeat() {
         if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-        this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), 150);
+        this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), 100);
     }
 
     async sendHeartbeat() {
@@ -94,7 +94,7 @@ class RaftNode {
                     prevLogTerm,
                     entries: [],
                     leaderCommit: this.commitIndex
-                }, { timeout: 300 });
+                }, { timeout: 1000 });
                 if (res.data.term > this.currentTerm) this.stepDown(res.data.term);
             } catch (e) {}
         }
@@ -119,7 +119,7 @@ class RaftNode {
                         prevLogTerm,
                         entries: [entry],
                         leaderCommit: this.commitIndex
-                    }, { timeout: 300 });
+                    }, { timeout: 1000 });
                     if (res.data.success) {
                         this.matchIndex[peer] = entry.index;
                         this.nextIndex[peer] = entry.index + 1;
