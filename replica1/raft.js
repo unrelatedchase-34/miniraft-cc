@@ -96,10 +96,32 @@ class RaftNode {
     }
 
     // ---------------- LOG ----------------
-    appendEntry(entry) {
-        this.log.push(entry);
-        console.log(`[${this.id}] appended entry`);
+    async appendEntry(entry) {
+    this.log.push(entry);
+    console.log(`[${this.id}] appended entry, replicating...`);
+    
+    let acks = 1; // count self
+    
+    for (let peer of this.peers) {
+        try {
+            await axios.post(`${peer}/raft/append-entries`, {
+                term: this.currentTerm,
+                leaderId: this.id,
+                entries: [entry]
+            });
+            acks++;
+        } catch (e) {}
     }
+    
+    // committed only if majority confirmed
+    if (acks >= 2) {
+        console.log(`[${this.id}] entry committed with ${acks} acks`);
+        return true;
+    } else {
+        console.log(`[${this.id}] not enough acks, entry may be lost`);
+        return false;
+    }
+}
 
     // ---------------- RPC ----------------
     handleRequestVote(data) {
