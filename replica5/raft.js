@@ -16,22 +16,27 @@ class RaftNode {
         this.electionTimeout = null;
         this.heartbeatInterval = null;
         this.electionInProgress = false;
-        this.lastHeardFromLeader = Date.now(); // start suppressed
+        this.lastHeardFromLeader = Date.now();
     }
 
-    start() { this.resetElectionTimer(); }
+    start() {
+        // Stagger startup — each node waits a different random time before first election
+        // This breaks the "all start simultaneously" problem
+        const stagger = Math.random() * 5000 + 1000;
+        console.log(`[${this.id}] Starting after ${Math.round(stagger)}ms stagger`);
+        setTimeout(() => this.resetElectionTimer(), stagger);
+    }
+
     isLeader() { return this.state === "LEADER"; }
 
     resetElectionTimer() {
         if (this.electionTimeout) clearTimeout(this.electionTimeout);
-        // Check every 2 seconds if we should start election
         this.electionTimeout = setTimeout(() => this.tryStartElection(), 2000);
     }
 
     tryStartElection() {
-        const silenceDuration = Date.now() - this.lastHeardFromLeader;
-        // Only start election if silent for MORE than 30 seconds
-        if (silenceDuration < 30000) {
+        const silence = Date.now() - this.lastHeardFromLeader;
+        if (silence < 30000) {
             this.resetElectionTimer();
             return;
         }
@@ -53,21 +58,33 @@ class RaftNode {
         console.log(`[${this.id}] Candidate (term ${this.currentTerm})`);
         const lastLogIndex = this.log.length - 1;
         const lastLogTerm = lastLogIndex >= 0 ? this.log[lastLogIndex].term : 0;
-        const votePromises = this.peers.map(peer =>
-            axios.post(`${peer}/raft/request-vote`, {
-                term: this.currentTerm, candidateId: this.id, lastLogIndex, lastLogTerm
-            }, { timeout: 5000 }).then(res => res.data.voteGranted ? 1 : 0).catch(() => 0)
+
+        // Stagger vote requests slightly so not all hit peers simultaneously
+        const votePromises = this.peers.map((peer, i) =>
+            new Promise(r => setTimeout(r, i * 200)).then(() =>
+                axios.post(`${peer}/raft/request-vote`, {
+                    term: this.currentTerm, candidateId: this.id, lastLogIndex, lastLogTerm
+                }, { timeout: 5000 }).then(res => res.data.voteGranted ? 1 : 0).catch(() => 0)
+            )
         );
+
         const results = await Promise.all(votePromises);
         votes += results.reduce((a, b) => a + b, 0);
         this.electionInProgress = false;
-        if (this.state !== "CANDIDATE") return;
+
+        if (this.state !== "CANDIDATE") {
+            console.log(`[${this.id}] Aborting - no longer candidate`);
+            return;
+        }
+
         const majority = Math.floor((this.peers.length + 1) / 2) + 1;
         if (votes >= majority) {
             this.becomeLeader();
         } else {
             console.log(`[${this.id}] Lost election (${votes} votes)`);
             this.state = "FOLLOWER";
+            // Add random delay before retry to break split vote loops
+            this.lastHeardFromLeader = Date.now() - (Math.random() * 20000 + 5000);
             this.resetElectionTimer();
         }
     }
@@ -164,7 +181,6 @@ class RaftNode {
             if (candidateLogOk) {
                 voteGranted = true;
                 this.votedFor = candidateId;
-                // Reset suppression timer when granting vote too
                 this.lastHeardFromLeader = Date.now();
                 this.resetElectionTimer();
             }
@@ -176,8 +192,6 @@ class RaftNode {
         const { term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit } = data;
         if (term < this.currentTerm) return { success: false, term: this.currentTerm };
         if (term > this.currentTerm) this.stepDown(term);
-
-        // Valid leader — suppress elections for 30 seconds
         this.lastHeardFromLeader = Date.now();
         this.state = "FOLLOWER";
         this.leaderId = leaderId;
@@ -185,7 +199,6 @@ class RaftNode {
         this.electionInProgress = false;
         if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
         this.resetElectionTimer();
-
         if (prevLogIndex >= 0) {
             if (!this.log[prevLogIndex] || this.log[prevLogIndex].term !== prevLogTerm) {
                 return { success: false, term: this.currentTerm };
